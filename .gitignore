@@ -2,3 +2,9 @@ venv
 models
 wheels
 __pycache__
+.regression_configs/
+outputs/
+datasets/voc-mini-yolo/
+datasets/voc-mini-darknet/
+tools/darknet/
+.cache/

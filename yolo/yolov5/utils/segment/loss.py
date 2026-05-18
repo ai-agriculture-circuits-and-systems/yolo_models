@@ -1,5 +1,3 @@
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,26 +10,23 @@ from .general import crop_mask
 
 
 class ComputeLoss:
-    """Computes the YOLOv5 model's loss components including classification, objectness, box, and mask losses."""
-
+    # Compute losses
     def __init__(self, model, autobalance=False, overlap=False):
-        """Initializes the compute loss function for YOLOv5 models with options for autobalancing and overlap
-        handling.
-        """
         self.sort_obj_iou = False
         self.overlap = overlap
         device = next(model.parameters()).device  # get model device
         h = model.hyp  # hyperparameters
+        self.device = device
 
         # Define criteria
-        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h["cls_pw"]], device=device))
-        BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h["obj_pw"]], device=device))
+        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
+        BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
 
         # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
-        self.cp, self.cn = smooth_BCE(eps=h.get("label_smoothing", 0.0))  # positive, negative BCE targets
+        self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))  # positive, negative BCE targets
 
         # Focal loss
-        g = h["fl_gamma"]  # focal loss gamma
+        g = h['fl_gamma']  # focal loss gamma
         if g > 0:
             BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
 
@@ -47,7 +42,6 @@ class ComputeLoss:
         self.device = device
 
     def __call__(self, preds, targets, masks):  # predictions, targets, model
-        """Evaluates YOLOv5 model's loss for given predictions, targets, and masks; returns total loss components."""
         p, proto = preds
         bs, nm, mask_h, mask_w = proto.shape  # batch size, number of masks, mask height, mask width
         lcls = torch.zeros(1, device=self.device)
@@ -61,7 +55,8 @@ class ComputeLoss:
             b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx
             tobj = torch.zeros(pi.shape[:4], dtype=pi.dtype, device=self.device)  # target obj
 
-            if n := b.shape[0]:
+            n = b.shape[0]  # number of targets
+            if n:
                 pxy, pwh, _, pcls, pmask = pi[b, a, gj, gi].split((2, 2, 1, self.nc, nm), 1)  # subset of predictions
 
                 # Box regression
@@ -115,15 +110,13 @@ class ComputeLoss:
         return loss * bs, torch.cat((lbox, lseg, lobj, lcls)).detach()
 
     def single_mask_loss(self, gt_mask, pred, proto, xyxy, area):
-        """Calculates and normalizes single mask loss for YOLOv5 between predicted and ground truth masks."""
+        # Mask loss for one image
         pred_mask = (pred @ proto.view(self.nm, -1)).view(-1, *proto.shape[1:])  # (n,32) @ (32,80,80) -> (n,80,80)
         loss = F.binary_cross_entropy_with_logits(pred_mask, gt_mask, reduction="none")
         return (crop_mask(loss, xyxy).mean(dim=(1, 2)) / area).mean()
 
     def build_targets(self, p, targets):
-        """Prepares YOLOv5 targets for loss computation; inputs targets (image, class, x, y, w, h), output target
-        classes/boxes.
-        """
+        # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
         na, nt = self.na, targets.shape[0]  # number of anchors, targets
         tcls, tbox, indices, anch, tidxs, xywhn = [], [], [], [], [], []
         gain = torch.ones(8, device=self.device)  # normalized to gridspace gain
@@ -140,20 +133,16 @@ class ComputeLoss:
         targets = torch.cat((targets.repeat(na, 1, 1), ai[..., None], ti[..., None]), 2)  # append anchor indices
 
         g = 0.5  # bias
-        off = (
-            torch.tensor(
-                [
-                    [0, 0],
-                    [1, 0],
-                    [0, 1],
-                    [-1, 0],
-                    [0, -1],  # j,k,l,m
-                    # [1, 1], [1, -1], [-1, 1], [-1, -1],  # jk,jm,lk,lm
-                ],
-                device=self.device,
-            ).float()
-            * g
-        )  # offsets
+        off = torch.tensor(
+            [
+                [0, 0],
+                [1, 0],
+                [0, 1],
+                [-1, 0],
+                [0, -1],  # j,k,l,m
+                # [1, 1], [1, -1], [-1, 1], [-1, -1],  # jk,jm,lk,lm
+            ],
+            device=self.device).float() * g  # offsets
 
         for i in range(self.nl):
             anchors, shape = self.anchors[i], p[i].shape
@@ -164,7 +153,7 @@ class ComputeLoss:
             if nt:
                 # Matches
                 r = t[..., 4:6] / anchors[:, None]  # wh ratio
-                j = torch.max(r, 1 / r).max(2)[0] < self.hyp["anchor_t"]  # compare
+                j = torch.max(r, 1 / r).max(2)[0] < self.hyp['anchor_t']  # compare
                 # j = wh_iou(anchors, t[:, 4:6]) > model.hyp['iou_t']  # iou(3,n)=wh_iou(anchors(3,2), gwh(n,2))
                 t = t[j]  # filter
 

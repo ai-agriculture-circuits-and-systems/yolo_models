@@ -36,15 +36,13 @@ class TryExcept(contextlib.ContextDecorator):
 
 
 def threaded(func):
-    """
-    Decorates a function to run in a separate thread, returning the thread object.
+    """Decorates a function to run in a separate thread, returning the thread object.
 
     Usage: @threaded.
     """
 
     def wrapper(*args, **kwargs):
-        """
-        Runs the decorated function in a separate thread and returns the thread object.
+        """Runs the decorated function in a separate thread and returns the thread object.
 
         Usage: @threaded.
         """
@@ -91,7 +89,7 @@ def notebook_init(verbose=True):
     if verbose:
         gb = 1 << 30  # bytes to GiB (1024 ** 3)
         ram = psutil.virtual_memory().total
-        total, used, free = shutil.disk_usage("/")
+        total, _used, free = shutil.disk_usage("/")
         with contextlib.suppress(Exception):  # clear display if ipython is installed
             from IPython import display
 

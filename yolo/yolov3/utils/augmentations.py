@@ -61,8 +61,7 @@ def normalize(x, mean=IMAGENET_MEAN, std=IMAGENET_STD, inplace=False):
 
 
 def denormalize(x, mean=IMAGENET_MEAN, std=IMAGENET_STD):
-    """
-    Converts normalized images back to original form using ImageNet stats; inputs in BCHW format.
+    """Converts normalized images back to original form using ImageNet stats; inputs in BCHW format.
 
     Example: `denormalize(tensor)`.
     """
@@ -72,8 +71,7 @@ def denormalize(x, mean=IMAGENET_MEAN, std=IMAGENET_STD):
 
 
 def augment_hsv(im, hgain=0.5, sgain=0.5, vgain=0.5):
-    """
-    Applies HSV color-space augmentation with optional gains; expects BGR image input.
+    """Applies HSV color-space augmentation with optional gains; expects BGR image input.
 
     Example: `augment_hsv(image)`.
     """
@@ -132,7 +130,7 @@ def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleF
 
     # Compute padding
     ratio = r, r  # width, height ratios
-    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    new_unpad = round(shape[1] * r), round(shape[0] * r)
     dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
     if auto:  # minimum rectangle
         dw, dh = np.mod(dw, stride), np.mod(dh, stride)  # wh padding
@@ -146,8 +144,8 @@ def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleF
 
     if shape[::-1] != new_unpad:  # resize
         im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
-    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    top, bottom = round(dh - 0.1), round(dh + 0.1)
+    left, right = round(dw - 0.1), round(dw + 0.1)
     im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
     return im, ratio, (dw, dh)
 
@@ -240,7 +238,7 @@ def copy_paste(im, labels, segments, p=0.5):
     """
     n = len(segments)
     if p and n:
-        h, w, c = im.shape  # height, width, channels
+        _h, w, _c = im.shape  # height, width, channels
         im_new = np.zeros(im.shape, np.uint8)
         for j in random.sample(range(n), k=round(p * n)):
             l, s = labels[j], segments[j]
@@ -286,8 +284,7 @@ def cutout(im, labels, p=0.5):
 
 
 def mixup(im, labels, im2, labels2):
-    """Applies MixUp augmentation by blending images and labels; see https://arxiv.org/pdf/1710.09412.pdf for
-    details.
+    """Applies MixUp augmentation by blending images and labels; see https://arxiv.org/pdf/1710.09412.pdf for details.
     """
     r = np.random.beta(32.0, 32.0)  # mixup ratio, alpha=beta=32.0
     im = (im * r + im2 * (1 - r)).astype(np.uint8)

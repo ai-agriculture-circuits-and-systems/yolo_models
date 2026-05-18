@@ -1,0 +1,20 @@
+# filename<TAB>primary_url[<TAB>fallback_url]
+# Curated fixes for README links that return HTTP 404 (checked 2026-05).
+#
+# YOLOv2: pjreddie.com is down; full weights mirrored from lgsvl/autoware-perception (Darknet yolov2).
+yolov2.weights	https://media.githubusercontent.com/media/lgsvl/autoware-perception/master/yolov2/yolo.weights	https://github.com/lgsvl/autoware-perception/raw/master/yolov2/yolo.weights
+# YOLOv2-tiny: Internet Archive snapshot of the original pjreddie file (~43 MB).
+yolov2-tiny.weights	https://web.archive.org/web/2020if_/https://pjreddie.com/media/files/yolov2-tiny.weights
+yolov4-csp.weights	https://github.com/AlexeyAB/darknet/releases/download/darknet_yolo_v4_pre/yolov4-csp.weights
+yolov4x-mish.weights	https://github.com/AlexeyAB/darknet/releases/download/darknet_yolo_v4_pre/yolov4x-mish.weights
+yolov5n-seg.pt	https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n-seg.pt
+yolov10n.pt	https://github.com/THU-MIG/yolov10/releases/download/v1.1/yolov10n.pt	https://github.com/IDEA-Research/YOLOv10/releases/download/YOLOv10/yolov10n.pt
+yolov10s.pt	https://github.com/THU-MIG/yolov10/releases/download/v1.1/yolov10s.pt
+yolov10m.pt	https://github.com/THU-MIG/yolov10/releases/download/v1.1/yolov10m.pt
+yolov10l.pt	https://github.com/THU-MIG/yolov10/releases/download/v1.1/yolov10l.pt
+yolov10x.pt	https://github.com/THU-MIG/yolov10/releases/download/v1.1/yolov10x.pt
+yolo11n.pt	https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt
+yolo11s.pt	https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11s.pt
+yolo11m.pt	https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11m.pt
+yolo11l.pt	https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11l.pt
+yolo11x.pt	https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11x.pt

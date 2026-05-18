@@ -1,5 +1,26 @@
+# Unified deps for regression + all training backends in this repo.
+
+# Core (Ultralytics YOLOv7–YOLO11, shared)
 torch>=2.0.0
+torchvision>=0.9.0
 ultralytics>=8.0.0
 opencv-python>=4.8.0
 pillow>=10.0.0
 numpy>=1.24.0
+tensorboard>=2.14.0
+
+# YOLOv3 / YOLOv5 vendored forks (train.py / val.py)
+pandas>=1.1.4
+seaborn>=0.11.0
+ipython>=7.0.0
+PyYAML>=5.3.1
+scipy>=1.4.1
+tqdm>=4.66.3
+thop>=0.1.1
+matplotlib>=3.3
+psutil>=5.8.0
+requests>=2.23.0
+
+# YOLOv6
+addict>=2.4.0
+pycocotools>=2.0.0

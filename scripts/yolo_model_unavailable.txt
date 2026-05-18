@@ -1,0 +1,6 @@
+# Weights with no reliable public mirror found (as of 2026-05).
+# The download script skips these with a warning instead of counting them as hard failures.
+#
+# yolov1-tiny.weights: pjreddie.com removed; Wayback snapshots return HTML only.
+#   Use yolov1.weights (full model) instead, or a modern YOLOv3+ checkpoint.
+yolov1-tiny.weights
