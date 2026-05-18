@@ -227,3 +227,25 @@ def list_regression_models(models_dir: Path | None = None) -> list[str]:
 
 DEFAULT_DATA_YAML = REPO_ROOT / ".regression_configs" / "voc-mini.yaml"
 DEFAULT_DATA_YAML_V6 = REPO_ROOT / ".regression_configs" / "voc-mini-yolov6.yaml"
+DEFAULT_DATA_YAML_SEG = REPO_ROOT / ".regression_configs" / "voc-mini-seg.yaml"
+DEFAULT_DATA_YAML_POSE = REPO_ROOT / ".regression_configs" / "voc-mini-pose.yaml"
+DEFAULT_DATA_YAML_CLS = REPO_ROOT / ".regression_configs" / "voc-mini-cls.yaml"
+
+
+def regression_data_yaml(spec: ModelSpec) -> Path:
+    """Return the mini-VOC dataset YAML appropriate for a model task."""
+    if spec.backend is TrainBackend.YOLOV6:
+        return DEFAULT_DATA_YAML_V6
+    if "-cls" in spec.model_id:
+        return DEFAULT_DATA_YAML_CLS
+    if "-seg" in spec.model_id:
+        return DEFAULT_DATA_YAML_SEG
+    if "-pose" in spec.model_id:
+        return DEFAULT_DATA_YAML_POSE
+    return DEFAULT_DATA_YAML
+
+
+def list_all_regression_model_ids(models_dir: Path | None = None) -> list[str]:
+    """All trainable checkpoint ids under ``models/`` (for full regression)."""
+    catalog = discover_models(models_dir)
+    return sorted(mid for mid, spec in catalog.items() if spec.trainable)

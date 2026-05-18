@@ -371,6 +371,7 @@ ensure_python_deps() {
   python_has_module scipy || missing+=("scipy")
   python_has_module thop || missing+=("thop")
   python_has_module addict || missing+=("addict")
+  python_has_module pkg_resources || missing+=("setuptools")
   python_has_module seaborn || missing+=("seaborn")
   python_has_module IPython || missing+=("ipython")
 
@@ -536,8 +537,11 @@ ensure_mini_voc() {
 }
 
 ensure_yolo_dataset() {
-  if [[ -f "${YOLO_DATA_MARKER}" && -f "${REGRESSION_CONFIG_DIR}/voc-mini.yaml" ]]; then
-    log_info "YOLO mini VOC dataset ready: ${YOLO_DATA_MARKER}"
+  if [[ -f "${YOLO_DATA_MARKER}" && -f "${REGRESSION_CONFIG_DIR}/voc-mini.yaml" \
+    && -f "${REGRESSION_CONFIG_DIR}/voc-mini-seg.yaml" \
+    && -f "${REGRESSION_CONFIG_DIR}/voc-mini-pose.yaml" \
+    && -f "${REGRESSION_CONFIG_DIR}/voc-mini-cls.yaml" ]]; then
+    log_info "Mini VOC regression datasets ready: ${YOLO_DATA_MARKER}"
     return 0
   fi
   if [[ "${SKIP_DATA_SETUP}" == "true" ]]; then
@@ -545,7 +549,7 @@ ensure_yolo_dataset() {
     exit 1
   fi
   ensure_mini_voc
-  log_info "Converting mini VOC to YOLO format..."
+  log_info "Preparing mini VOC (det/seg/pose/cls) and dataset YAMLs..."
   "${PYTHON}" "${PREPARE_PY}" --config-dir "${REGRESSION_CONFIG_DIR}"
 }
 
@@ -565,10 +569,10 @@ from pathlib import Path
 
 yolo_root = Path(os.environ["REPO_ROOT"]) / "yolo"
 sys.path.insert(0, str(yolo_root))
-from registry import list_regression_models, list_models
+from registry import list_all_regression_model_ids, list_regression_models
 
 if os.environ.get("ALL_TRAINABLE", "false").lower() == "true":
-    ids = [mid for mid, _ in list_models(trainable_only=True)]
+    ids = list_all_regression_model_ids()
 else:
     ids = list_regression_models()
     if os.environ.get("WITH_DARKNET", "false").lower() == "true":

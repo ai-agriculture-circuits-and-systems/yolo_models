@@ -5,6 +5,10 @@ __pycache__
 .regression_configs/
 outputs/
 datasets/voc-mini-yolo/
+datasets/voc-mini-yolo-seg/
+datasets/voc-mini-yolo-pose/
+datasets/voc-mini-cls/
 datasets/voc-mini-darknet/
+outputs/.darknet.train.lock
 tools/darknet/
 .cache/

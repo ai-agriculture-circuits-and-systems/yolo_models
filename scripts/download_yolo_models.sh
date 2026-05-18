@@ -358,18 +358,20 @@ sync_fork_vendor() {
 }
 
 sync_yolov3_sources() {
-  # Repo train.py/val.py match ultralytics/yolov3 master (DetectMultiBackend + utils.dataloaders).
+  # Pin entire yolov3 tree to v9.0 so models/, utils/, and train.py stay compatible.
   sync_fork_vendor \
     "yolov3" \
     "https://github.com/ultralytics/yolov3.git" \
-    "master" \
+    "v9.0" \
     "${YOLO_ROOT}/yolov3" \
     "${YOLO_ROOT}/yolov3/.vendor-sync" \
-    "${YOLO_ROOT}/yolov3/utils/dataloaders.py" \
+    "${YOLO_ROOT}/yolov3/utils/datasets.py" \
     "${YOLO_ROOT}/yolov3/models/yolo.py"
   local tmp="${REPO_ROOT}/.cache/yolov3-src"
   if [[ "${DRY_RUN}" != "true" && -f "${tmp}/train.py" ]]; then
-    cp -f "${tmp}/train.py" "${tmp}/val.py" "${YOLO_ROOT}/yolov3/"
+    for f in train.py val.py detect.py; do
+      [[ -f "${tmp}/${f}" ]] && cp -f "${tmp}/${f}" "${YOLO_ROOT}/yolov3/"
+    done
   fi
 }
 

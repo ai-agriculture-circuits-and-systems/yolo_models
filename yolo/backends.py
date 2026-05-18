@@ -2,23 +2,25 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 from darknet_support import darknet_cfg_for, ensure_darknet_dataset, find_darknet_binary, run_darknet_train
 from registry import (
-    DEFAULT_DATA_YAML,
-    DEFAULT_DATA_YAML_V6,
     MODELS_DIR,
     REPO_ROOT,
     ModelSpec,
     TrainBackend,
+    regression_data_yaml,
     resolve_model,
 )
 
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "outputs" / "train"
+DARKNET_LOCK_FILE = REPO_ROOT / "outputs" / ".darknet.train.lock"
 
 
 def resolve_weights(weights: str) -> str:
@@ -37,6 +39,23 @@ def vendored_ultralytics_complete(work_dir: Path) -> bool:
     return (work_dir / "ultralytics" / "models").is_dir()
 
 
+def _ultralytics_env(spec: ModelSpec) -> dict[str, str] | None:
+    """Build PYTHONPATH for Ultralytics training.
+
+    YOLOv7/v9 checkpoints pickle ``models.yolo`` from the legacy YOLOv5 repo; load them
+  with the pip ``ultralytics`` package only. YOLOv10+ uses the vendored tree when present.
+    """
+    if re.match(r"yolov[79]", spec.model_id):
+        return None
+    if vendored_ultralytics_complete(spec.work_dir):
+        return {
+            "PYTHONPATH": os.pathsep.join(
+                [str(spec.work_dir), os.environ.get("PYTHONPATH", "")]
+            ).rstrip(os.pathsep)
+        }
+    return None
+
+
 def preflight(spec: ModelSpec) -> None:
     """Verify upstream code and weights exist before training."""
     if not spec.trainable:
@@ -49,6 +68,12 @@ def preflight(spec: ModelSpec) -> None:
     if spec.backend is not TrainBackend.YOLOV6 and not weights_path.is_file():
         raise FileNotFoundError(
             f"Weights not found: {weights_path}. Run ./scripts/download_yolo_models.sh"
+        )
+
+    data_yaml = regression_data_yaml(spec)
+    if not data_yaml.is_file():
+        raise FileNotFoundError(
+            f"Dataset YAML missing: {data_yaml}. Run: ./scripts/prepare_mini_voc_yolo.py"
         )
 
     if spec.backend is TrainBackend.YOLOV3_DET:
@@ -208,14 +233,18 @@ model.train(
     verbose=True,
 )
 """
-    env: dict[str, str] | None = None
-    if vendored_ultralytics_complete(spec.work_dir):
-        env = {
-            "PYTHONPATH": os.pathsep.join(
-                [str(spec.work_dir), os.environ.get("PYTHONPATH", "")]
-            ).rstrip(os.pathsep)
-        }
-    return _run([sys.executable, "-c", code], cwd=REPO_ROOT, env=env)
+    return _run([sys.executable, "-c", code], cwd=REPO_ROOT, env=_ultralytics_env(spec))
+
+
+def _run_darknet_locked(**kwargs) -> int:
+    """Serialize Darknet training (not safe for concurrent detector processes)."""
+    DARKNET_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(DARKNET_LOCK_FILE, "w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            return run_darknet_train(**kwargs)
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def run_train(
@@ -236,9 +265,9 @@ def run_train(
     project = out_root / spec.model_id
     name = "exp"
     use_weights = resolve_weights(weights or spec.weights_file)
+    data = data_yaml or regression_data_yaml(spec)
 
     if spec.backend is TrainBackend.YOLOV3_DET:
-        data = data_yaml or DEFAULT_DATA_YAML
         return _yolov5_fork_train(
             spec,
             train_script=spec.work_dir / "train.py",
@@ -252,7 +281,6 @@ def run_train(
         )
 
     if spec.backend is TrainBackend.YOLOV5_DET:
-        data = data_yaml or DEFAULT_DATA_YAML
         return _yolov5_fork_train(
             spec,
             train_script=spec.work_dir / "train.py",
@@ -266,7 +294,6 @@ def run_train(
         )
 
     if spec.backend is TrainBackend.YOLOV5_SEG:
-        data = data_yaml or DEFAULT_DATA_YAML
         return _yolov5_fork_train(
             spec,
             train_script=spec.work_dir / "segment" / "train.py",
@@ -280,13 +307,19 @@ def run_train(
         )
 
     if spec.backend is TrainBackend.YOLOV5_CLS:
-        raise RuntimeError(
-            f"{spec.model_id} is a classification model; mini-VOC detection YAML is not suitable. "
-            "Provide a classification dataset YAML via --data."
+        return _yolov5_fork_train(
+            spec,
+            train_script=spec.work_dir / "classify" / "train.py",
+            data_yaml=data,
+            weights=use_weights,
+            epochs=epochs,
+            device=device,
+            batch_size=batch_size,
+            project=project,
+            name=name,
         )
 
     if spec.backend is TrainBackend.YOLOV6:
-        data = data_yaml or DEFAULT_DATA_YAML_V6
         return train_yolov6(
             spec,
             data_yaml=data,
@@ -298,11 +331,6 @@ def run_train(
         )
 
     if spec.backend is TrainBackend.ULTRALYTICS:
-        data = data_yaml or DEFAULT_DATA_YAML
-        if "-cls" in spec.model_id:
-            raise RuntimeError(
-                f"{spec.model_id} requires an ImageNet-style classification dataset YAML (--data)."
-            )
         return train_ultralytics(
             spec,
             data_yaml=data,
@@ -319,14 +347,14 @@ def run_train(
         if cfg is None:
             raise FileNotFoundError(f"No Darknet cfg for {spec.model_id}")
         obj_data = ensure_darknet_dataset()
-        gpus = "0" if device not in {"cpu", "-1"} else "cpu"
-        return run_darknet_train(
+        # GPU isolation is via CUDA_VISIBLE_DEVICES in regression; do not pass -gpus.
+        return _run_darknet_locked(
             model_id=spec.model_id,
             weights=Path(use_weights),
             cfg_path=cfg,
             obj_data=obj_data,
             epochs=epochs,
-            gpus=gpus,
+            gpus="cpu",
             project_dir=project,
         )
 
