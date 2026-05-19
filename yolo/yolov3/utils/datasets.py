@@ -367,7 +367,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.label_files = img2label_paths(self.img_files)  # labels
         cache_path = Path(self.label_files[0]).parent.with_suffix('.cache')  # cached labels
         if cache_path.is_file():
-            cache = torch.load(cache_path)  # load
+            cache = torch.load(cache_path, weights_only=False)  # load
             if cache['hash'] != get_hash(self.label_files + self.img_files) or 'results' not in cache:  # changed
                 cache = self.cache_labels(cache_path)  # re-cache
         else:
@@ -379,9 +379,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         tqdm(None, desc=desc, total=n, initial=n)
         assert nf > 0 or not augment, f'No labels found in {cache_path}. Can not train without labels. See {help_url}'
 
-        # Read cache
+        # Read cache (yolov7/yolov5 may store [labels, shape, segments])
         cache.pop('hash')  # remove hash
-        labels, shapes = zip(*cache.values())
+        cache.pop('version', None)
+        cache.pop('msgs', None)
+        labels, shapes = zip(*((v[0], v[1]) for v in cache.values()))
         self.labels = list(labels)
         self.shapes = np.array(shapes, dtype=np.float64)
         self.img_files = list(cache.keys())  # update
@@ -391,7 +393,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 x[:, 0] = 0
 
         n = len(shapes)  # number of images
-        bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
+        bi = np.floor(np.arange(n) / batch_size).astype(int)  # batch index
         nb = bi[-1] + 1  # number of batches
         self.batch = bi  # batch index of image
         self.n = n
@@ -419,7 +421,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 elif mini > 1:
                     shapes[i] = [1, 1 / mini]
 
-            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(np.int) * stride
+            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(int) * stride
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         self.imgs = [None] * n
@@ -462,7 +464,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 else:
                     nm += 1  # label missing
                     l = np.zeros((0, 5), dtype=np.float32)
-                x[im_file] = [l, shape]
+                x[im_file] = [l, shape, []]  # empty segments for yolov7 cache compatibility
             except Exception as e:
                 nc += 1
                 print('WARNING: Ignoring corrupted image and/or label %s: %s' % (im_file, e))
@@ -908,7 +910,7 @@ def extract_boxes(path='../coco128/'):  # from utils.datasets import *; extract_
                     b = x[1:] * [w, h, w, h]  # box
                     # b[2:] = b[2:].max()  # rectangle to square
                     b[2:] = b[2:] * 1.2 + 3  # pad
-                    b = xywh2xyxy(b.reshape(-1, 4)).ravel().astype(np.int)
+                    b = xywh2xyxy(b.reshape(-1, 4)).ravel().astype(int)
 
                     b[[0, 2]] = np.clip(b[[0, 2]], 0, w)  # clip boxes outside of image
                     b[[1, 3]] = np.clip(b[[1, 3]], 0, h)

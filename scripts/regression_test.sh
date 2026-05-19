@@ -7,7 +7,7 @@
 #   ./scripts/regression_test.sh --gpus 0,1,2,3,4   # train models in parallel (one job per GPU)
 #   ./scripts/regression_test.sh --all-trainable   # all 68 checkpoints on mini VOC (slow)
 #
-# Default run trains 8 representative models (one per backend), NOT all 68.
+# Default run trains 8 representative models (detection backends + Darknet smoke), NOT all 68.
 # Use --all-trainable to train every checkpoint under models/ on mini VOC.
 #   ./scripts/regression_test.sh --with-darknet    # also train yolov4-tiny via AlexeyAB darknet
 #   ./scripts/regression_test.sh --models yolov5n,yolov8n
@@ -263,70 +263,58 @@ run_training_parallel_gpus() {
     exit 1
   fi
 
+  # Parallel mode uses smaller batches to avoid OOM when the next job starts on a GPU.
+  if [[ "${BATCH_SIZE}" -gt 2 ]]; then
+    BATCH_SIZE=2
+  fi
+
   mkdir -p "${REGRESSION_LOG_DIR}" "${REGRESSION_STATUS_DIR}"
   rm -f "${REGRESSION_STATUS_DIR}"/*.exit 2>/dev/null || true
 
   log_info "Parallel training: ${#MODEL_IDS[@]} model(s) across ${#gpus[@]} GPU(s): ${gpus[*]}"
-  log_info "Each job uses CUDA_VISIBLE_DEVICES=<id> and --device 0 inside the trainer"
+  log_info "One job per GPU at a time (batch-size=${BATCH_SIZE})"
 
-  local -a pids=()
-  local -a pid_models=()
-  local -a pid_gpus=()
-  local gpu_idx=0 ngpus=${#gpus[@]}
-  local model_id assigned_gpu pid i
+  declare -A gpu_pid=()
+  local g model_id pid
+  for g in "${gpus[@]}"; do
+    gpu_pid["${g}"]=""
+  done
+
+  wait_gpu() {
+    local target_gpu="$1"
+    pid="${gpu_pid[${target_gpu}]}"
+    if [[ -n "${pid}" ]]; then
+      wait "${pid}" 2>/dev/null || true
+      gpu_pid["${target_gpu}"]=""
+      sleep 3
+    fi
+  }
 
   launch_job() {
     local mid="$1"
-    local g="$2"
+    local target_gpu="$2"
+    wait_gpu "${target_gpu}"
+    log_info "========== ${mid} -> GPU ${target_gpu} =========="
     (
-      export CUDA_VISIBLE_DEVICES="${g}"
+      export CUDA_VISIBLE_DEVICES="${target_gpu}"
+      export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
       train_one_model "${mid}" "0"
     ) &
-    pids+=("$!")
-    pid_models+=("${mid}")
-    pid_gpus+=("${g}")
+    gpu_pid["${target_gpu}"]=$!
   }
 
-  reap_finished_jobs() {
-    local new_pids=() new_models=() new_gpus=()
-    for i in "${!pids[@]}"; do
-      if kill -0 "${pids[$i]}" 2>/dev/null; then
-        new_pids+=("${pids[$i]}")
-        new_models+=("${pid_models[$i]}")
-        new_gpus+=("${pid_gpus[$i]}")
-      else
-        if wait "${pids[$i]}"; then
-          :
-        else
-          if [[ "${FAIL_FAST}" == "true" ]]; then
-            log_error "FAIL_FAST: stopping after ${pid_models[$i]} on GPU ${pid_gpus[$i]}"
-            for pid in "${pids[@]}"; do
-              kill "${pid}" 2>/dev/null || true
-            done
-            exit 1
-          fi
-        fi
-      fi
-    done
-    pids=("${new_pids[@]}")
-    pid_models=("${new_models[@]}")
-    pid_gpus=("${new_gpus[@]}")
-  }
-
+  local gpu_idx=0 ngpus=${#gpus[@]}
   for model_id in "${MODEL_IDS[@]}"; do
-    while [[ ${#pids[@]} -ge ${ngpus} ]]; do
-      sleep 2
-      reap_finished_jobs
-    done
     assigned_gpu="${gpus[$((gpu_idx % ngpus))]}"
     gpu_idx=$((gpu_idx + 1))
-    log_info "========== ${model_id} -> GPU ${assigned_gpu} =========="
+    while [[ -n "${gpu_pid[${assigned_gpu}]}" ]] && kill -0 "${gpu_pid[${assigned_gpu}]}" 2>/dev/null; do
+      sleep 2
+    done
     launch_job "${model_id}" "${assigned_gpu}"
   done
 
-  while [[ ${#pids[@]} -gt 0 ]]; do
-    sleep 2
-    reap_finished_jobs
+  for g in "${gpus[@]}"; do
+    wait_gpu "${g}"
   done
 
   collect_results
@@ -442,6 +430,7 @@ ensure_source_trees() {
 
   log_info "Syncing yolov3/yolov5 vendor trees (models + utils + hyps)..."
   PYTHON="${PYTHON}" "${DOWNLOAD_SH}" --sync-sources-only
+  "${PYTHON}" "${REPO_ROOT}/scripts/patch_vendor_regression.py" || true
 }
 
 ensure_regression_weights() {
@@ -517,27 +506,34 @@ ensure_darknet_prereqs() {
 }
 
 ensure_mini_voc() {
+  local min_train_images=50
   if [[ -f "${MINI_VOC_MARKER}" ]]; then
-    log_info "Mini VOC present: ${MINI_VOC_MARKER}"
-    return 0
+    local train_n
+    train_n="$(wc -l < "${MINI_VOC_MARKER}")"
+    if [[ "${train_n}" -ge "${min_train_images}" ]]; then
+      log_info "Mini VOC present: ${MINI_VOC_MARKER} (${train_n} train images)"
+      return 0
+    fi
+    log_warn "Mini VOC has only ${train_n} train images (need >=${min_train_images}); rebuilding"
   fi
   if [[ "${SKIP_DATA_SETUP}" == "true" ]]; then
-    log_error "Mini VOC missing and --skip-data-setup was set"
+    log_error "Mini VOC missing or too small and --skip-data-setup was set"
     exit 1
   fi
   local full_voc="${REPO_ROOT}/datasets/voc/VOCdevkit/VOC2007/ImageSets/Main"
   if [[ ! -d "${full_voc}" ]]; then
     log_error "Mini VOC not found. Create it with:"
     log_error "  ./scripts/download_voc.sh --2007-only"
-    log_error "  ./scripts/create_mini_voc.sh"
+    log_error "  ./scripts/create_mini_voc.sh --regression"
     exit 1
   fi
-  log_info "Building mini VOC (first-time setup)..."
-  "${_SCRIPT_DIR}/create_mini_voc.sh"
+  log_info "Building mini VOC for regression (--regression profile)..."
+  "${_SCRIPT_DIR}/create_mini_voc.sh" --regression --link
 }
 
 ensure_yolo_dataset() {
   if [[ -f "${YOLO_DATA_MARKER}" && -f "${REGRESSION_CONFIG_DIR}/voc-mini.yaml" \
+    && -f "${REGRESSION_CONFIG_DIR}/voc-mini-yolov3.yaml" \
     && -f "${REGRESSION_CONFIG_DIR}/voc-mini-seg.yaml" \
     && -f "${REGRESSION_CONFIG_DIR}/voc-mini-pose.yaml" \
     && -f "${REGRESSION_CONFIG_DIR}/voc-mini-cls.yaml" ]]; then
@@ -551,6 +547,8 @@ ensure_yolo_dataset() {
   ensure_mini_voc
   log_info "Preparing mini VOC (det/seg/pose/cls) and dataset YAMLs..."
   "${PYTHON}" "${PREPARE_PY}" --config-dir "${REGRESSION_CONFIG_DIR}"
+  # Stale label caches break YOLOv7 training under PyTorch 2.6+ after dataset regen.
+  find "${REPO_ROOT}/datasets" -name "*.cache" -delete 2>/dev/null || true
 }
 
 list_models() {

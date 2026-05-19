@@ -322,7 +322,7 @@ clone_shallow() {
   git clone --depth 1 --branch "${branch}" "${url}" "${dest}"
 }
 
-# Sync models/ + utils/ (+ hyps) from upstream tags so train.py imports match.
+# Sync full upstream fork trees so train.py, utils/, models/, and data/ stay compatible.
 sync_fork_vendor() {
   local name="$1"
   local url="$2"
@@ -347,32 +347,29 @@ sync_fork_vendor() {
   log_info "Restoring ${name} vendor tree from ${url} (${branch})..."
   local tmp="${REPO_ROOT}/.cache/${name}-src"
   clone_shallow "${url}" "${branch}" "${tmp}"
-  rsync_tree "${tmp}/models" "${dest_root}/models"
-  rsync_tree "${tmp}/utils" "${dest_root}/utils"
-  if [[ -d "${tmp}/data/hyps" ]]; then
-    mkdir -p "${dest_root}/data"
-    rsync_tree "${tmp}/data/hyps" "${dest_root}/data/hyps"
+  mkdir -p "${dest_root}"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete --exclude .git "${tmp}/" "${dest_root}/"
+  else
+    rm -rf "${dest_root:?}"/*
+    cp -a "${tmp}/." "${dest_root}/"
   fi
   echo "${url}@${branch}" > "${marker_file}"
+  if [[ "${DRY_RUN}" != "true" ]]; then
+    "${PYTHON:-python3}" "${REPO_ROOT}/scripts/patch_vendor_torch_load.py" || true
+    "${PYTHON:-python3}" "${REPO_ROOT}/scripts/patch_vendor_regression.py" || true
+  fi
   log_info "${name} vendor tree synced"
 }
 
 sync_yolov3_sources() {
-  # Pin entire yolov3 tree to v9.0 so models/, utils/, and train.py stay compatible.
   sync_fork_vendor \
     "yolov3" \
     "https://github.com/ultralytics/yolov3.git" \
     "v9.0" \
     "${YOLO_ROOT}/yolov3" \
     "${YOLO_ROOT}/yolov3/.vendor-sync" \
-    "${YOLO_ROOT}/yolov3/utils/datasets.py" \
-    "${YOLO_ROOT}/yolov3/models/yolo.py"
-  local tmp="${REPO_ROOT}/.cache/yolov3-src"
-  if [[ "${DRY_RUN}" != "true" && -f "${tmp}/train.py" ]]; then
-    for f in train.py val.py detect.py; do
-      [[ -f "${tmp}/${f}" ]] && cp -f "${tmp}/${f}" "${YOLO_ROOT}/yolov3/"
-    done
-  fi
+    "${YOLO_ROOT}/yolov3/train.py"
 }
 
 sync_yolov5_sources() {
@@ -382,8 +379,7 @@ sync_yolov5_sources() {
     "v7.0" \
     "${YOLO_ROOT}/yolov5" \
     "${YOLO_ROOT}/yolov5/.vendor-sync" \
-    "${YOLO_ROOT}/yolov5/utils/dataloaders.py" \
-    "${YOLO_ROOT}/yolov5/models/yolo.py"
+    "${YOLO_ROOT}/yolov5/train.py"
 }
 
 sync_ultralytics_sources() {
@@ -397,10 +393,52 @@ sync_ultralytics_sources() {
   rsync_tree "${tmp}/ultralytics" "${YOLO_ROOT}/ultralytics/ultralytics"
 }
 
+# YOLOv7/v9 checkpoints unpickle modules from WongKinYiu repos (not YOLOv5 or pip ultralytics).
+sync_yolov7_sources() {
+  sync_fork_vendor \
+    "yolov7" \
+    "https://github.com/WongKinYiu/yolov7.git" \
+    "main" \
+    "${YOLO_ROOT}/yolov7" \
+    "${YOLO_ROOT}/yolov7/.vendor-sync" \
+    "${YOLO_ROOT}/yolov7/train.py"
+}
+
+sync_yolov9_sources() {
+  sync_fork_vendor \
+    "yolov9" \
+    "https://github.com/WongKinYiu/yolov9.git" \
+    "main" \
+    "${YOLO_ROOT}/yolov9" \
+    "${YOLO_ROOT}/yolov9/.vendor-sync" \
+    "${YOLO_ROOT}/yolov9/train.py"
+}
+
+sync_yolov6_sources() {
+  local models_dir="${YOLO_ROOT}/YOLOv6/yolov6/models"
+  if [[ -d "${models_dir}" && -f "${YOLO_ROOT}/YOLOv6/tools/train.py" ]]; then
+    log_info "YOLOv6 package present (${models_dir})"
+    return 0
+  fi
+  log_info "Restoring YOLOv6 models/ from https://github.com/meituan/YOLOv6 ..."
+  local tmp="${REPO_ROOT}/.cache/yolov6-src"
+  clone_shallow "https://github.com/meituan/YOLOv6.git" "main" "${tmp}"
+  if [[ "${DRY_RUN}" != "true" ]]; then
+    mkdir -p "${YOLO_ROOT}/YOLOv6"
+    rsync_tree "${tmp}/yolov6/models" "${YOLO_ROOT}/YOLOv6/yolov6/models"
+    rsync_tree "${tmp}/tools" "${YOLO_ROOT}/YOLOv6/tools"
+    rsync_tree "${tmp}/configs" "${YOLO_ROOT}/YOLOv6/configs"
+  fi
+  log_info "YOLOv6 sources synced"
+}
+
 sync_sources() {
   require_git
   sync_yolov3_sources
   sync_yolov5_sources
+  sync_yolov6_sources
+  sync_yolov7_sources
+  sync_yolov9_sources
   sync_ultralytics_sources
 }
 

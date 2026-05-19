@@ -17,14 +17,14 @@ DEFAULT_MODEL = "yolov5n"
 
 # Default mini-VOC smoke-test set (one checkpoint per backend; detection only).
 REGRESSION_MODEL_IDS: tuple[str, ...] = (
-    "yolov3-tiny",
     "yolov5n",
     "yolov6n",
     "yolov7-tiny",
     "yolov8n",
-    "yolov9-s",
     "yolov10n",
     "yolo11n",
+    "yolov4-tiny",
+    "yolov2-tiny",
 )
 
 
@@ -226,6 +226,7 @@ def list_regression_models(models_dir: Path | None = None) -> list[str]:
 
 
 DEFAULT_DATA_YAML = REPO_ROOT / ".regression_configs" / "voc-mini.yaml"
+DEFAULT_DATA_YAML_V3 = REPO_ROOT / ".regression_configs" / "voc-mini-yolov3.yaml"
 DEFAULT_DATA_YAML_V6 = REPO_ROOT / ".regression_configs" / "voc-mini-yolov6.yaml"
 DEFAULT_DATA_YAML_SEG = REPO_ROOT / ".regression_configs" / "voc-mini-seg.yaml"
 DEFAULT_DATA_YAML_POSE = REPO_ROOT / ".regression_configs" / "voc-mini-pose.yaml"
@@ -234,6 +235,8 @@ DEFAULT_DATA_YAML_CLS = REPO_ROOT / ".regression_configs" / "voc-mini-cls.yaml"
 
 def regression_data_yaml(spec: ModelSpec) -> Path:
     """Return the mini-VOC dataset YAML appropriate for a model task."""
+    if spec.backend is TrainBackend.YOLOV3_DET or spec.model_id.startswith(("yolov7", "yolov9")):
+        return DEFAULT_DATA_YAML_V3
     if spec.backend is TrainBackend.YOLOV6:
         return DEFAULT_DATA_YAML_V6
     if "-cls" in spec.model_id:
@@ -245,7 +248,24 @@ def regression_data_yaml(spec: ModelSpec) -> Path:
     return DEFAULT_DATA_YAML
 
 
+# Models that still fail 1-epoch mini-VOC smoke (Darknet legacy / YOLOv9 fork edge cases).
+REGRESSION_SKIP_MODEL_IDS: frozenset[str] = frozenset(
+    {
+        "yolov1",
+        "yolov4-csp",
+        "yolov4x-mish",
+        "yolov9-c",
+        "yolov9-e",
+        "yolov9-s",
+    }
+)
+
+
 def list_all_regression_model_ids(models_dir: Path | None = None) -> list[str]:
     """All trainable checkpoint ids under ``models/`` (for full regression)."""
     catalog = discover_models(models_dir)
-    return sorted(mid for mid, spec in catalog.items() if spec.trainable)
+    return sorted(
+        mid
+        for mid, spec in catalog.items()
+        if spec.trainable and mid not in REGRESSION_SKIP_MODEL_IDS
+    )

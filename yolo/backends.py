@@ -7,12 +7,16 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
+
+import yaml
 
 from darknet_support import darknet_cfg_for, ensure_darknet_dataset, find_darknet_binary, run_darknet_train
 from registry import (
     MODELS_DIR,
     REPO_ROOT,
+    YOLO_ROOT,
     ModelSpec,
     TrainBackend,
     regression_data_yaml,
@@ -39,14 +43,32 @@ def vendored_ultralytics_complete(work_dir: Path) -> bool:
     return (work_dir / "ultralytics" / "models").is_dir()
 
 
+def _legacy_ultralytics_repo(model_id: str) -> Path | None:
+    """Return vendored WongKinYiu tree for YOLOv7/v9 weight unpickling."""
+    if model_id.startswith("yolov7"):
+        return YOLO_ROOT / "yolov7"
+    if model_id.startswith("yolov9"):
+        return YOLO_ROOT / "yolov9"
+    return None
+
+
 def _ultralytics_env(spec: ModelSpec) -> dict[str, str] | None:
     """Build PYTHONPATH for Ultralytics training.
 
-    YOLOv7/v9 checkpoints pickle ``models.yolo`` from the legacy YOLOv5 repo; load them
-  with the pip ``ultralytics`` package only. YOLOv10+ uses the vendored tree when present.
+    YOLOv7/v9 need WongKinYiu ``models/`` on PYTHONPATH. YOLOv8+ uses pip ultralytics when
+    installed; vendored ``ultralytics/`` is only a fallback (never mixed with v7/v9).
     """
-    if re.match(r"yolov[79]", spec.model_id):
+    import importlib.util
+
+    legacy = _legacy_ultralytics_repo(spec.model_id)
+    if legacy is not None and (legacy / "models" / "yolo.py").is_file():
+        prefix = str(legacy)
+        existing = os.environ.get("PYTHONPATH", "")
+        return {"PYTHONPATH": os.pathsep.join([prefix, existing]).rstrip(os.pathsep)}
+
+    if importlib.util.find_spec("ultralytics") is not None:
         return None
+
     if vendored_ultralytics_complete(spec.work_dir):
         return {
             "PYTHONPATH": os.pathsep.join(
@@ -54,6 +76,16 @@ def _ultralytics_env(spec: ModelSpec) -> dict[str, str] | None:
             ).rstrip(os.pathsep)
         }
     return None
+
+
+def _subprocess_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for forked training (PyTorch 2.6+ needs legacy weight unpickling)."""
+    env = os.environ.copy()
+    env.setdefault("TORCH_FORCE_WEIGHTS_ONLY_LOAD", "0")
+    env.setdefault("MPLBACKEND", "Agg")
+    if extra:
+        env.update(extra)
+    return env
 
 
 def preflight(spec: ModelSpec) -> None:
@@ -94,8 +126,14 @@ def preflight(spec: ModelSpec) -> None:
     if spec.backend is TrainBackend.ULTRALYTICS:
         import importlib.util
 
-        if importlib.util.find_spec("ultralytics") is None and not vendored_ultralytics_complete(
-            spec.work_dir
+        legacy = _legacy_ultralytics_repo(spec.model_id)
+        if legacy is not None and not (legacy / "models" / "yolo.py").is_file():
+            raise FileNotFoundError(
+                f"Missing {legacy / 'models'}. "
+                "Run: ./scripts/download_yolo_models.sh --sync-sources"
+            )
+        if legacy is None and importlib.util.find_spec("ultralytics") is None and not (
+            vendored_ultralytics_complete(spec.work_dir)
         ):
             raise FileNotFoundError(
                 "Ultralytics not installed. Run: pip install -r requirements.txt "
@@ -117,12 +155,54 @@ def preflight(spec: ModelSpec) -> None:
 
 
 def _run(cmd: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> int:
-    run_env = os.environ.copy()
-    if env:
-        run_env.update(env)
+    run_env = _subprocess_env(env)
     print("[INFO]", " ".join(cmd), file=sys.stderr)
     completed = subprocess.run(cmd, cwd=cwd, env=run_env, check=False)
     return int(completed.returncode)
+
+
+def _yaml_dataset_root(data_yaml: Path) -> str:
+    """Read ``path`` from a dataset YAML (used by YOLOv5 classify)."""
+    cfg = yaml.safe_load(data_yaml.read_text(encoding="utf-8"))
+    if isinstance(cfg, dict) and cfg.get("path"):
+        return str(cfg["path"])
+    return str(data_yaml.parent)
+
+
+def _regression_batch_size(spec: ModelSpec, batch_size: int) -> int:
+    """Cap batch size for very large YOLOv7 P6 checkpoints (avoid OOM on 32GB GPUs)."""
+    if re.match(r"yolov7-(d6|e6|e6e|w6)$", spec.model_id):
+        return min(max(1, batch_size), 1)
+    return max(1, batch_size)
+
+
+def _legacy_yolov7_train_script(work_dir: Path, model_id: str) -> Path:
+    """P6/E6 YOLOv7 checkpoints need ``train_aux.py`` (``ComputeLossAuxOTA``)."""
+    if re.match(r"yolov7-(d6|e6|e6e|w6)$", model_id):
+        aux = work_dir / "train_aux.py"
+        if aux.is_file():
+            return aux
+    return work_dir / "train.py"
+
+
+def _legacy_fork_extra_args(spec: ModelSpec) -> list[str]:
+    """Extra CLI flags for WongKinYiu YOLOv7/v9 ``train.py`` forks."""
+    if spec.model_id.startswith("yolov9"):
+        cfg = spec.work_dir / "models" / "detect" / f"{spec.model_id}.yaml"
+        if not cfg.is_file():
+            cfg = spec.work_dir / "models" / "detect" / "yolov9-c.yaml"
+        hyp = spec.work_dir / "data" / "hyps" / "hyp.scratch-high.yaml"
+        args = ["--cfg", str(cfg)]
+        if hyp.is_file():
+            args.extend(["--hyp", str(hyp)])
+        return args
+    if spec.model_id.startswith("yolov7"):
+        cfg = spec.work_dir / "cfg" / "training" / f"{spec.model_id}.yaml"
+        if not cfg.is_file():
+            cfg = spec.work_dir / "cfg" / "training" / "yolov7.yaml"
+        if cfg.is_file():
+            return ["--cfg", str(cfg)]
+    return []
 
 
 def _yolov5_fork_train(
@@ -147,7 +227,7 @@ def _yolov5_fork_train(
         "--epochs",
         str(epochs),
         "--batch-size",
-        str(batch_size),
+        str(max(1, batch_size)),
         "--device",
         device,
         "--project",
@@ -156,11 +236,59 @@ def _yolov5_fork_train(
         name,
         "--exist-ok",
         "--workers",
-        "2",
-        "--noplots",
+        "0",
     ]
-    if epochs == 1:
-        cmd.append("--noval")
+    legacy = _legacy_ultralytics_repo(spec.model_id)
+    cmd.extend(_legacy_fork_extra_args(spec))
+    if legacy is not None and epochs == 1:
+        if spec.model_id.startswith("yolov7"):
+            cmd.append("--notest")
+        elif spec.model_id.startswith("yolov9"):
+            cmd.append("--noval")
+    elif spec.backend is not TrainBackend.YOLOV3_DET:
+        cmd.append("--noplots")
+        if epochs == 1:
+            cmd.append("--noval")
+    if spec.backend is TrainBackend.YOLOV5_SEG and epochs <= 1:
+        hyp = spec.work_dir / "data/hyps/hyp.regression.yaml"
+        if hyp.is_file():
+            cmd.extend(["--hyp", str(hyp)])
+    return _run(cmd, cwd=spec.work_dir)
+
+
+def _yolov5_cls_train(
+    spec: ModelSpec,
+    *,
+    train_script: Path,
+    data_yaml: Path,
+    weights: str,
+    epochs: int,
+    device: str,
+    batch_size: int,
+    project: Path,
+    name: str,
+) -> int:
+    cmd = [
+        sys.executable,
+        str(train_script),
+        "--model",
+        weights,
+        "--data",
+        _yaml_dataset_root(data_yaml),
+        "--epochs",
+        str(epochs),
+        "--batch-size",
+        str(max(1, batch_size)),
+        "--device",
+        device,
+        "--project",
+        str(project),
+        "--name",
+        name,
+        "--exist-ok",
+        "--workers",
+        "0",
+    ]
     return _run(cmd, cwd=spec.work_dir)
 
 
@@ -199,7 +327,8 @@ def train_yolov6(
         "--name",
         name,
     ]
-    return _run(cmd, cwd=spec.work_dir)
+    yolov6_env = {"PYTHONPATH": str(spec.work_dir)}
+    return _run(cmd, cwd=spec.work_dir, env=yolov6_env)
 
 
 def train_ultralytics(
@@ -214,6 +343,16 @@ def train_ultralytics(
     name: str,
 ) -> int:
     """Train YOLOv7–YOLO11 and task variants via the Ultralytics API."""
+    # Tiny mini-VOC (2 images): disable mosaic/mixup so seg/pose batches keep labels.
+    smoke = epochs <= 1
+    task_batch = max(1, batch_size)
+    if smoke and ("-seg" in spec.model_id or "-pose" in spec.model_id):
+        # Avoid mixed empty-label batches on mini-VOC (Ultralytics seg/pose loss).
+        task_batch = 1
+    if "-cls" in spec.model_id:
+        data_arg = _yaml_dataset_root(data_yaml)
+    else:
+        data_arg = str(data_yaml)
     code = f"""
 import importlib.util
 if importlib.util.find_spec("ultralytics") is None:
@@ -221,17 +360,27 @@ if importlib.util.find_spec("ultralytics") is None:
 from ultralytics import YOLO
 
 model = YOLO({weights!r})
-model.train(
-    data={str(data_yaml)!r},
+kwargs = dict(
+    data={data_arg!r},
     epochs={epochs},
     device={device!r},
-    batch={batch_size},
+    batch={task_batch},
     project={str(project)!r},
     name={name!r},
     exist_ok=True,
     plots=False,
     verbose=True,
+    workers=0,
 )
+if {smoke!r}:
+    kwargs.update(dict(
+        mosaic=0.0, mixup=0.0, copy_paste=0.0, degrees=0.0, translate=0.0, scale=0.0,
+        fliplr=0.0, flipud=0.0, hsv_h=0.0, hsv_s=0.0, hsv_v=0.0, close_mosaic=0,
+        val=False,
+    ))
+    if "-seg" in {spec.model_id!r}:
+        kwargs["overlap_mask"] = False
+model.train(**kwargs)
 """
     return _run([sys.executable, "-c", code], cwd=REPO_ROOT, env=_ultralytics_env(spec))
 
@@ -266,6 +415,7 @@ def run_train(
     name = "exp"
     use_weights = resolve_weights(weights or spec.weights_file)
     data = data_yaml or regression_data_yaml(spec)
+    batch_size = _regression_batch_size(spec, batch_size)
 
     if spec.backend is TrainBackend.YOLOV3_DET:
         return _yolov5_fork_train(
@@ -307,7 +457,7 @@ def run_train(
         )
 
     if spec.backend is TrainBackend.YOLOV5_CLS:
-        return _yolov5_fork_train(
+        return _yolov5_cls_train(
             spec,
             train_script=spec.work_dir / "classify" / "train.py",
             data_yaml=data,
@@ -320,6 +470,11 @@ def run_train(
         )
 
     if spec.backend is TrainBackend.YOLOV6:
+        models_dir = spec.work_dir / "yolov6" / "models"
+        if not models_dir.is_dir():
+            raise FileNotFoundError(
+                f"Missing {models_dir}. Run: ./scripts/download_yolo_models.sh --sync-sources"
+            )
         return train_yolov6(
             spec,
             data_yaml=data,
@@ -331,6 +486,28 @@ def run_train(
         )
 
     if spec.backend is TrainBackend.ULTRALYTICS:
+        legacy = _legacy_ultralytics_repo(spec.model_id)
+        if legacy is not None:
+            for cache in REPO_ROOT.glob("datasets/**/*.cache"):
+                cache.unlink(missing_ok=True)
+        if legacy is not None and (legacy / "train.py").is_file():
+            fork_spec = replace(spec, work_dir=legacy)
+            train_py = (
+                _legacy_yolov7_train_script(legacy, spec.model_id)
+                if spec.model_id.startswith("yolov7")
+                else legacy / "train.py"
+            )
+            return _yolov5_fork_train(
+                fork_spec,
+                train_script=train_py,
+                data_yaml=data,
+                weights=use_weights,
+                epochs=epochs,
+                device=device,
+                batch_size=batch_size,
+                project=project,
+                name=name,
+            )
         return train_ultralytics(
             spec,
             data_yaml=data,
@@ -347,14 +524,16 @@ def run_train(
         if cfg is None:
             raise FileNotFoundError(f"No Darknet cfg for {spec.model_id}")
         obj_data = ensure_darknet_dataset()
-        # GPU isolation is via CUDA_VISIBLE_DEVICES in regression; do not pass -gpus.
+        darknet_gpus = "cpu"
+        if device not in {"", "cpu"} and device != "auto":
+            darknet_gpus = device.replace("cuda:", "").split(",")[0]
         return _run_darknet_locked(
             model_id=spec.model_id,
             weights=Path(use_weights),
             cfg_path=cfg,
             obj_data=obj_data,
             epochs=epochs,
-            gpus="cpu",
+            gpus=darknet_gpus,
             project_dir=project,
         )
 

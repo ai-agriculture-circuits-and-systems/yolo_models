@@ -1,6 +1,5 @@
 #!/bin/bash
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
-
+# YOLOv5 🚀 by Ultralytics, GPL-3.0 license
 # Download COCO 2017 dataset http://cocodataset.org
 # Example usage: bash data/scripts/get_coco.sh
 # parent

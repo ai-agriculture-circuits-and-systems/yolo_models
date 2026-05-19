@@ -8,7 +8,8 @@ opencv-python>=4.8.0
 pillow>=10.0.0
 numpy>=1.24.0
 tensorboard>=2.14.0
-setuptools>=65.0.0
+# YOLOv5 fork still imports pkg_resources (removed in setuptools 82+).
+setuptools>=65.0.0,<81.0.0
 
 # YOLOv3 / YOLOv5 vendored forks (train.py / val.py)
 pandas>=1.1.4

@@ -103,7 +103,7 @@ def labels_to_class_weights(labels, nc=80):
         return torch.Tensor()
 
     labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
-    classes = labels[:, 0].astype(np.int)  # labels = [class xywh]
+    classes = labels[:, 0].astype(int)  # labels = [class xywh]
     weights = np.bincount(classes, minlength=nc)  # occurrences per class
 
     # Prepend gridpoint count (for uCE training)
@@ -118,7 +118,7 @@ def labels_to_class_weights(labels, nc=80):
 
 def labels_to_image_weights(labels, nc=80, class_weights=np.ones(80)):
     # Produces image weights based on class_weights and image contents
-    class_counts = np.array([np.bincount(x[:, 0].astype(np.int), minlength=nc) for x in labels])
+    class_counts = np.array([np.bincount(x[:, 0].astype(int), minlength=nc) for x in labels])
     image_weights = (class_weights.reshape(1, nc) * class_counts).sum(1)
     # index = random.choices(range(n), weights=image_weights, k=1)  # weight image sample
     return image_weights
@@ -349,7 +349,7 @@ def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, classes=None,
 
 def strip_optimizer(f='weights/best.pt', s=''):  # from utils.general import *; strip_optimizer()
     # Strip optimizer from 'f' to finalize training, optionally save as 's'
-    x = torch.load(f, map_location=torch.device('cpu'))
+    x = torch.load(f, map_location=torch.device('cpu'), weights_only=False)
     x['optimizer'] = None
     x['training_results'] = None
     x['epoch'] = -1

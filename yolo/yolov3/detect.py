@@ -39,7 +39,7 @@ def detect(save_img=False):
     classify = False
     if classify:
         modelc = load_classifier(name='resnet101', n=2)  # initialize
-        modelc.load_state_dict(torch.load('weights/resnet101.pt', map_location=device)['model']).to(device).eval()
+        modelc.load_state_dict(torch.load('weights/resnet101.pt', map_location=device, weights_only=False)['model']).to(device).eval()
 
     # Set Dataloader
     vid_path, vid_writer = None, None

@@ -35,8 +35,30 @@ VOC_NAMES: list[str] = [
 
 READY_MARKER = ".ready"
 PERSON_CLASS_ID = VOC_NAMES.index("person")
-# COCO 17 keypoints (shape only; synthetic points for mini-VOC pose smoke tests).
+# COCO 17 keypoints (synthetic layout from person bbox for mini-VOC pose smoke tests).
 POSE_KPT_SHAPE = (17, 3)
+# Only duplicate images when the set is smaller than this (regression-sized VOC is larger).
+MIN_IMAGES_BEFORE_DUPLICATE = 32
+# Normalized (x, y) within person bbox for COCO-17 order (visibility filled as 2).
+POSE_BBOX_SKELETON: list[tuple[float, float]] = [
+    (0.50, 0.08),  # nose
+    (0.45, 0.05),
+    (0.55, 0.05),  # eyes
+    (0.40, 0.10),
+    (0.60, 0.10),  # ears
+    (0.35, 0.22),
+    (0.65, 0.22),  # shoulders
+    (0.30, 0.40),
+    (0.70, 0.40),  # elbows
+    (0.28, 0.58),
+    (0.72, 0.58),  # wrists
+    (0.38, 0.55),
+    (0.62, 0.55),  # hips
+    (0.40, 0.75),
+    (0.60, 0.75),  # knees
+    (0.42, 0.95),
+    (0.58, 0.95),  # ankles
+]
 
 
 def _repo_root() -> Path:
@@ -176,11 +198,37 @@ def prepare_mini_voc_yolo(
     _link_or_copy(output_root / "labels" / "train2007", v6_root / "labels" / "train")
     _link_or_copy(output_root / "labels" / "test2007", v6_root / "labels" / "val")
 
+    if train_n + val_n < MIN_IMAGES_BEFORE_DUPLICATE:
+        _expand_split_for_regression(output_root, "train2007", copies=3)
+        _expand_split_for_regression(output_root, "test2007", copies=3)
+
     marker.write_text(
         f"train2007={train_n}\nval2007={val_n}\n",
         encoding="utf-8",
     )
     return marker
+
+
+def _expand_split_for_regression(yolo_root: Path, split: str, *, copies: int = 3) -> None:
+    """Duplicate images/labels so tiny mini-VOC works with seg/pose trainers (smoke only)."""
+    img_dir = yolo_root / "images" / split
+    lbl_dir = yolo_root / "labels" / split
+    for img in sorted(img_dir.glob("*.jpg")):
+        lbl = lbl_dir / f"{img.stem}.txt"
+        if not lbl.is_file():
+            continue
+        label_text = lbl.read_text(encoding="utf-8")
+        for idx in range(copies):
+            dup_stem = f"{img.stem}_r{idx}"
+            dup_img = img_dir / f"{dup_stem}.jpg"
+            dup_lbl = lbl_dir / f"{dup_stem}.txt"
+            if dup_img.exists():
+                continue
+            try:
+                os.symlink(img.resolve(), dup_img)
+            except OSError:
+                shutil.copy2(img, dup_img)
+            dup_lbl.write_text(label_text, encoding="utf-8")
 
 
 def write_voc_mini_yaml(output_path: Path, yolo_dataset_root: Path) -> Path:
@@ -195,6 +243,27 @@ val:
   - images/test2007
 test:
   - images/test2007
+nc: {len(VOC_NAMES)}
+
+names:
+{names_block}
+"""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(content, encoding="utf-8")
+    return output_path
+
+
+def write_voc_mini_yolov3_yaml(output_path: Path, yolo_dataset_root: Path) -> Path:
+    """Write dataset YAML for legacy YOLOv3 (absolute train/val image dirs)."""
+    dataset_path = yolo_dataset_root.absolute()
+    train_dir = dataset_path / "images" / "train2007"
+    val_dir = dataset_path / "images" / "test2007"
+    names_block = "\n".join(f"  {idx}: {name}" for idx, name in enumerate(VOC_NAMES))
+    content = f"""# Auto-generated for mini VOC regression tests (YOLOv3 fork).
+train: {train_dir}
+val: {val_dir}
+test: {val_dir}
+nc: {len(VOC_NAMES)}
 
 names:
 {names_block}
@@ -217,21 +286,83 @@ def _read_det_labels(label_path: Path) -> list[tuple[int, float, float, float, f
     return rows
 
 
+def _min_box_dim(value: float, *, minimum: float = 0.02) -> float:
+    """Clamp normalized width/height so seg polygons are non-degenerate."""
+    return max(minimum, min(1.0, value))
+
+
 def _bbox_to_seg_line(cls_id: int, xc: float, yc: float, w: float, h: float) -> str:
     """Convert a normalized bbox to a 4-point polygon (YOLO-seg line)."""
+    w = _min_box_dim(w)
+    h = _min_box_dim(h)
     x1 = max(0.0, min(1.0, xc - w / 2))
     y1 = max(0.0, min(1.0, yc - h / 2))
     x2 = max(0.0, min(1.0, xc + w / 2))
-    y2 = max(0.0, min(1.0, yc - h / 2))
+    y2 = max(0.0, min(1.0, yc + h / 2))
     return f"{cls_id} {x1} {y1} {x2} {y1} {x2} {y2} {x1} {y2}"
 
 
 def _bbox_to_pose_line(cls_id: int, xc: float, yc: float, w: float, h: float) -> str:
-    """Synthetic COCO-17 keypoints at bbox center (smoke-test only)."""
+    """Synthetic COCO-17 keypoints laid out inside the person bbox (smoke-test only)."""
+    w = _min_box_dim(w)
+    h = _min_box_dim(h)
+    x1 = xc - w / 2
+    y1 = yc - h / 2
     kpts: list[str] = []
-    for _ in range(POSE_KPT_SHAPE[0]):
-        kpts.extend([f"{xc:.6f}", f"{yc:.6f}", "2"])
+    for rx, ry in POSE_BBOX_SKELETON:
+        kx = max(0.0, min(1.0, x1 + rx * w))
+        ky = max(0.0, min(1.0, y1 + ry * h))
+        kpts.extend([f"{kx:.6f}", f"{ky:.6f}", "2"])
     return f"{cls_id} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f} " + " ".join(kpts)
+
+
+def _seg_lines_from_voc_mask(
+    voc_devkit: Path,
+    year: str,
+    image_id: str,
+    det_rows: list[tuple[int, float, float, float, float]],
+) -> list[str] | None:
+    """Build YOLO-seg label lines from VOC ``SegmentationObject`` mask (instance index = object order)."""
+    seg_png = voc_devkit / f"VOC{year}/SegmentationObject/{image_id}.png"
+    if not seg_png.is_file() or not det_rows:
+        return None
+
+    try:
+        import cv2  # type: ignore[import-untyped]
+        import numpy as np  # type: ignore[import-untyped]
+    except ImportError:
+        return None
+
+    mask = cv2.imread(str(seg_png), cv2.IMREAD_UNCHANGED)
+    if mask is None:
+        return None
+    if mask.ndim == 3:
+        mask = mask[:, :, 0]
+
+    lines: list[str] = []
+    for inst_idx, (cls_id, _xc, _yc, _w, _h) in enumerate(det_rows, start=1):
+        binary = (mask == inst_idx).astype("uint8")
+        if binary.sum() < 4:
+            continue
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+        contour = max(contours, key=cv2.contourArea)
+        if contour.shape[0] < 3:
+            continue
+        epsilon = 0.005 * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        if len(approx) < 3:
+            continue
+        height, width = mask.shape[:2]
+        coords: list[str] = []
+        for point in approx.reshape(-1, 2):
+            xn = max(0.0, min(1.0, float(point[0]) / width))
+            yn = max(0.0, min(1.0, float(point[1]) / height))
+            coords.extend([f"{xn:.6f}", f"{yn:.6f}"])
+        if len(coords) >= 6:
+            lines.append(f"{cls_id} " + " ".join(coords))
+    return lines if lines else None
 
 
 def _build_task_dataset(
@@ -239,6 +370,8 @@ def _build_task_dataset(
     task_name: str,
     *,
     label_writer,
+    voc_mini_root: Path | None = None,
+    year: str = "2007",
     force: bool = False,
 ) -> Path:
     """Create ``voc-mini-yolo-<task>`` with shared images and task-specific ``labels/``."""
@@ -250,39 +383,80 @@ def _build_task_dataset(
     if out_root.exists() and force:
         shutil.rmtree(out_root)
 
+    voc_devkit = (voc_mini_root / "VOCdevkit") if voc_mini_root else None
+    image_count = 0
+
     for split in ("train2007", "test2007"):
         img_src = yolo_root / "images" / split
         lbl_src = yolo_root / "labels" / split
         img_dst = out_root / "images" / split
         lbl_dst = out_root / "labels" / split
-        _link_or_copy(img_src, img_dst)
+        img_dst.mkdir(parents=True, exist_ok=True)
         lbl_dst.mkdir(parents=True, exist_ok=True)
         for img in sorted(img_src.glob("*.jpg")):
             rows = _read_det_labels(lbl_src / f"{img.stem}.txt")
-            lines = label_writer(rows)
+            lines = label_writer(img.stem, rows, voc_devkit, year)
+            if not lines:
+                continue
+            image_count += 1
             (lbl_dst / f"{img.stem}.txt").write_text(
-                "\n".join(lines) + ("\n" if lines else ""),
+                "\n".join(lines) + "\n",
                 encoding="utf-8",
             )
+            try:
+                os.symlink(img.resolve(), img_dst / img.name)
+            except OSError:
+                shutil.copy2(img, img_dst / img.name)
+
+    if image_count < MIN_IMAGES_BEFORE_DUPLICATE:
+        for split in ("train2007", "test2007"):
+            _expand_split_for_regression(out_root, split, copies=3)
 
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("ok\n", encoding="utf-8")
     return out_root
 
 
-def prepare_mini_voc_seg(yolo_root: Path, force: bool = False) -> Path:
-    """Build YOLO-seg dataset (bbox quads as polygons)."""
+def prepare_mini_voc_seg(
+    yolo_root: Path,
+    voc_mini_root: Path,
+    *,
+    year: str = "2007",
+    force: bool = False,
+) -> Path:
+    """Build YOLO-seg dataset (VOC masks when available, else bbox quads)."""
 
-    def _writer(rows: list[tuple[int, float, float, float, float]]) -> list[str]:
+    def _writer(
+        image_id: str,
+        rows: list[tuple[int, float, float, float, float]],
+        voc_devkit: Path | None,
+        year_name: str,
+    ) -> list[str]:
+        if voc_devkit is not None:
+            from_mask = _seg_lines_from_voc_mask(voc_devkit, year_name, image_id, rows)
+            if from_mask:
+                return from_mask
         return [_bbox_to_seg_line(c, xc, yc, w, h) for c, xc, yc, w, h in rows]
 
-    return _build_task_dataset(yolo_root, "seg", label_writer=_writer, force=force)
+    return _build_task_dataset(
+        yolo_root,
+        "seg",
+        label_writer=_writer,
+        voc_mini_root=voc_mini_root,
+        year=year,
+        force=force,
+    )
 
 
 def prepare_mini_voc_pose(yolo_root: Path, force: bool = False) -> Path:
-    """Build YOLO-pose dataset (synthetic person keypoints)."""
+    """Build YOLO-pose dataset (synthetic person keypoints inside bbox)."""
 
-    def _writer(rows: list[tuple[int, float, float, float, float]]) -> list[str]:
+    def _writer(
+        _image_id: str,
+        rows: list[tuple[int, float, float, float, float]],
+        _voc_devkit: Path | None,
+        _year_name: str,
+    ) -> list[str]:
         return [
             _bbox_to_pose_line(c, xc, yc, w, h)
             for c, xc, yc, w, h in rows
@@ -331,7 +505,7 @@ def write_voc_mini_seg_yaml(output_path: Path, yolo_dataset_root: Path) -> Path:
     """Write dataset YAML for segmentation trainers (det images + seg labels)."""
     dataset_path = yolo_dataset_root.absolute()
     names_block = "\n".join(f"  {idx}: {name}" for idx, name in enumerate(VOC_NAMES))
-    content = f"""# Auto-generated for mini VOC regression tests (bbox-as-mask polygons).
+    content = f"""# Auto-generated for mini VOC regression tests (VOC masks or bbox polygons).
 path: {dataset_path}
 train:
   - images/train2007
@@ -339,6 +513,7 @@ val:
   - images/test2007
 test:
   - images/test2007
+nc: {len(VOC_NAMES)}
 
 names:
 {names_block}
@@ -401,10 +576,11 @@ def prepare_all_regression_datasets(
 ) -> None:
     """Prepare detection, seg, pose, and cls mini-VOC layouts + YAML configs."""
     prepare_mini_voc_yolo(voc_mini_root, yolo_output, year=year, force=force)
-    seg_root = prepare_mini_voc_seg(yolo_output, force=force)
+    seg_root = prepare_mini_voc_seg(yolo_output, voc_mini_root, year=year, force=force)
     pose_root = prepare_mini_voc_pose(yolo_output, force=force)
     cls_root = prepare_mini_voc_cls(yolo_output, force=force)
     write_voc_mini_yaml(config_dir / "voc-mini.yaml", yolo_output)
+    write_voc_mini_yolov3_yaml(config_dir / "voc-mini-yolov3.yaml", yolo_output)
     write_voc_mini_seg_yaml(config_dir / "voc-mini-seg.yaml", seg_root)
     write_voc_mini_pose_yaml(config_dir / "voc-mini-pose.yaml", pose_root)
     write_voc_mini_cls_yaml(config_dir / "voc-mini-cls.yaml", cls_root)
@@ -419,13 +595,12 @@ def write_yolov6_voc_mini_yaml(
     """Write a dataset YAML for YOLOv6 (paths relative to YOLOv6 repo root)."""
     base = (yolov6_root or (_repo_root() / "yolo" / "YOLOv6")).absolute()
     dataset_path = yolo_dataset_root.absolute()
-    rel = os.path.relpath(str(dataset_path), str(base))
-    voc12 = Path(rel) / "voc_07_12"
+    rel = Path(os.path.relpath(str(dataset_path), str(base)))
     names_repr = repr(VOC_NAMES)
     content = f"""# Auto-generated for mini VOC regression tests. Do not edit by hand.
-train: {voc12.as_posix()}/images/train
-val: {voc12.as_posix()}/images/val
-test: {voc12.as_posix()}/images/val
+train: {rel.as_posix()}/images/train2007
+val: {rel.as_posix()}/images/test2007
+test: {rel.as_posix()}/images/test2007
 
 is_coco: False
 nc: 20

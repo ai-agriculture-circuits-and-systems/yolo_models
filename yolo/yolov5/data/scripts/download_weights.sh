@@ -1,6 +1,5 @@
 #!/bin/bash
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
-
+# YOLOv5 🚀 by Ultralytics, GPL-3.0 license
 # Download latest models from https://github.com/ultralytics/yolov5/releases
 # Example usage: bash data/scripts/download_weights.sh
 # parent

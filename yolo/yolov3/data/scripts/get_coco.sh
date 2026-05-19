@@ -1,57 +1,24 @@
 #!/bin/bash
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
-
-# Download COCO 2017 dataset http://cocodataset.org
-# Example usage: bash data/scripts/get_coco.sh
-# parent
-# ├── yolov5
-# └── datasets
-#     └── coco  ← downloads here
-
-# Arguments (optional) Usage: bash data/scripts/get_coco.sh --train --val --test --segments
-if [ "$#" -gt 0 ]; then
-  for opt in "$@"; do
-    case "${opt}" in
-    --train) train=true ;;
-    --val) val=true ;;
-    --test) test=true ;;
-    --segments) segments=true ;;
-    esac
-  done
-else
-  train=true
-  val=true
-  test=false
-  segments=false
-fi
+# COCO 2017 dataset http://cocodataset.org
+# Download command: bash data/scripts/get_coco.sh
+# Train command: python train.py --data coco.yaml
+# Default dataset location is next to /yolov3:
+#   /parent_folder
+#     /coco
+#     /yolov3
 
 # Download/unzip labels
-d='../datasets' # unzip directory
+d='../' # unzip directory
 url=https://github.com/ultralytics/yolov5/releases/download/v1.0/
-if [ "$segments" == "true" ]; then
-  f='coco2017labels-segments.zip' # 168 MB
-else
-  f='coco2017labels.zip' # 46 MB
-fi
-echo 'Downloading' $url$f ' ...'
-curl -L $url$f -o $f -# && unzip -q $f -d $d && rm $f &
+f='coco2017labels.zip'                                                                 # 68 MB
+echo 'Downloading' $url$f ' ...' && curl -L $url$f -o $f && unzip -q $f -d $d && rm $f # download, unzip, remove
 
 # Download/unzip images
-d='../datasets/coco/images' # unzip directory
+d='../coco/images' # unzip directory
 url=http://images.cocodataset.org/zips/
-if [ "$train" == "true" ]; then
-  f='train2017.zip' # 19G, 118k images
-  echo 'Downloading' $url$f '...'
-  curl -L $url$f -o $f -# && unzip -q $f -d $d && rm $f &
-fi
-if [ "$val" == "true" ]; then
-  f='val2017.zip' # 1G, 5k images
-  echo 'Downloading' $url$f '...'
-  curl -L $url$f -o $f -# && unzip -q $f -d $d && rm $f &
-fi
-if [ "$test" == "true" ]; then
-  f='test2017.zip' # 7G, 41k images (optional)
-  echo 'Downloading' $url$f '...'
-  curl -L $url$f -o $f -# && unzip -q $f -d $d && rm $f &
-fi
-wait # finish background tasks
+f1='train2017.zip' # 19G, 118k images
+f2='val2017.zip'   # 1G, 5k images
+f3='test2017.zip'  # 7G, 41k images (optional)
+for f in $f1 $f2; do
+  echo 'Downloading' $url$f ' ...' && curl -L $url$f -o $f && unzip -q $f -d $d && rm $f # download, unzip, remove
+done
